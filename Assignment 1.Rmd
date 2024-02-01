@@ -1,0 +1,243 @@
+---
+title: "Analysis of Predictive Factors of Covid19 Pro-Social Behaviour"
+author: 'Anthony Duong'
+output:
+  html_document: default
+  pdf_document: default
+
+  
+---
+
+```{r setup, include=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(cluster)
+```
+
+```{r}
+# load raw data
+rm(list = ls())
+#set.seed(32535813) # XXXXXXXX = your student ID
+cvbase_raw = read.csv("PsyCoronaBaselineExtract.csv")
+#cvbase_raw <- cvbase_raw[sample(nrow(cvbase_raw), 40000), ]
+```
+
+```{r}
+#data set statistics 
+dim(cvbase_raw)
+sum(is.na(cvbase_raw))
+
+```
+
+## Pre-Processing and Overview
+
+```         
+This reduced version of the extract contains 40,000 rows and 54 columns, with 53 columns being integers and the coded country column being all strings.There are a total of 426561 NA results which may be due to how the data was recorded, where there are multiple columns for the same question so each subject is going to contain at least one NA result. 
+
+There are some responses that have no coded countries and these points will be dropped as the aim is to compare the prosocial behaviour and responses between countries.
+
+This report will be predominantly looking at Pakistan, thus the data can be summarised and grouped by coded country to be compared. 
+
+
+The results were modified so that neutral answers such as ‘about equally likely’ or ‘very slightly or not at all’ was equal to 0. Similarly, negative responses such as ‘extremely unhappy’ or ‘very dissatisfied’ were given negative scores. The happy and life satisfaction variables do not have 0 as a result as there are no neutral responses to these questions. 
+```
+
+```{r}
+#dropping no coded country
+cvbase = cvbase_raw
+cvbase = cvbase[!(cvbase$coded_country == ""),]
+
+response_data = cvbase
+
+#dropping non relevant data
+response_data[c(21:30,47:49, 51:54)] = NULL
+
+# make neutral responses equal to 0
+response_data = response_data %>%
+  #Affect concept
+  mutate(response_data[1:13]-1)%>%
+  #c19Norm
+  mutate(response_data[32:34]-3)%>%
+  #trust in government
+  mutate(response_data[35:36]-3)%>%
+  #happy
+  mutate(response_data[27]-5) %>%
+  #lifesat
+  mutate(response_data[28] - 3)
+```
+
+```         
+The employment status data has been reduced to the effective proportion of the population that are willing and able to work that are actually working. In this case, 40 hours per week is taken as full time and will be counted as 1 person. Everyone else will be counted as a percentage of full time based on the median working hours of that category. Therefore, those working 24-39 hours per week will be counted as 0.79 and those who are working 1-24 hours per week will be counted as 0.3. Those who are volunteering are counted as 0.5 and students are also 0.5 if they also work or volunteer. If multiple categories apply, the result will be the sum of the categories. 
+
+The population that is willing and able to work is defined as the sum of those who are working, including volunteers but not students and those who are not but are looking for work in each country.
+```
+
+```{r}
+# Dealing with employment status variables
+cvbase_employ = cvbase
+cvbase_employ = cvbase_employ %>%
+  select(coded_country, employstatus_1, employstatus_2, employstatus_3, employstatus_10, employstatus_4, employstatus_9, c19ProSo01, c19ProSo02, c19ProSo03, c19ProSo04) 
+
+cvbase_employ[is.na(cvbase_employ)] = 0
+
+#flag variable = 1 if person is working at all, will be used to calculate total workforce capacity
+cvbase_employ = cvbase_employ %>%
+  mutate(able_flag = + (if_any(2:5, ~ .x %in% 1))) %>% #all able to work
+  mutate(curr_flag = + (if_any(2:4, ~ .x %in% 1))) %>% #those who are currently working or volunteering
+  mutate(employstatus_1 = employstatus_1*0.3) %>%
+  mutate(employstatus_2 = employstatus_2 * 0.79)%>%
+  mutate(employstatus_10 = employstatus_10 *0.5) %>%
+  mutate(employstatus_9 = employstatus_9 *0.5)
+
+cvbase_employ$ProSocial_Score =  rowSums(cvbase_employ[8:11], na.rm = TRUE)
+
+cvbase_employ$FTE_equivalent = rowSums(cvbase_employ[2:6]) *cvbase_employ$curr_flag
+cvbase_employ[8:11] = NULL
+
+cvbase_FTE = cvbase_employ
+cvbase_FTE[2:7] = NULL
+
+work_prop = aggregate(cvbase_FTE[2:3],  cvbase_FTE[1], sum)
+work_prop = work_prop%>%
+  mutate(proportion_working = curr_flag/able_flag)
+work_prop[is.na(work_prop)] = 0
+work_prop[2:3] = NULL
+work_prop
+```
+
+## Creating the score
+
+```         
+Firstly, we will develop an index called pro-social predictive score, which will be abbreviated to PSP score, to quantify the effect of covid on people and how that impacts pro-social behaviour.
+
+To do this, each variable was assigned a weighting based on whether it is a positive measure or a negative measure with 1 being positive and -1 being negative. Age, gender, education and employment status were also not assigned a weight as it is difficult to uses these to quantify the psychological impact of covid, but they will be used to assess the effect of these variables on the PSP score.
+```
+
+```{r}
+# normalising results
+max_score = read.csv('max_scores.csv')
+
+for(i in 1:36){
+  response_data[i] = response_data[i] / max_score[1,i]
+}
+```
+
+```         
+The mean of responses by country to each variable was taken with NA results dropped before being normalised by dividing the result by the maximum possible positive response so that all variables have the same effect of the PSP score, before their respect weightings were applied to produce variable PSP scores for each predictor and a country PSP score is calculated as the sum of all variable PSP scores.
+```
+
+```{r}
+# mean of responses by country rounded to 2 decimal places
+response_ave = aggregate(response_data[1:36], response_data[37], mean, na.rm = TRUE)
+response_ave = response_ave %>%
+  mutate_if(is.double, round, digits = 2)
+```
+
+```{r}
+#Apply weightings to results to create variable PSP
+weightings = read.csv('weightings.csv')
+
+variable_psp = response_ave
+# Make NA values = 0 
+variable_psp[is.na(variable_psp)] = 0
+
+for(i in 1:36){
+variable_psp[i+1] = variable_psp[i+1] * weightings[1,i]
+}
+
+variable_psp = merge(variable_psp,work_prop)
+
+```
+
+```{r}
+# country PSP
+country_psp = variable_psp %>%
+  mutate(PSP = rowSums(variable_psp[2:38])) %>%
+  select(coded_country,PSP)
+```
+
+```         
+To give a general outlook on the prosocial behaviour, each of the prosocial data categories are averaged by country, then average of these scores are taken to give an estimate on the willingness to help of each country. This is then compared to both variable PSP scores and country PSP scores to assess how these factors predict the actual pro social behaviour.
+```
+
+```{r}
+# Getting only ProSocial data
+cvbase_proso =  cvbase %>%
+  select(coded_country, c19ProSo01, c19ProSo02, c19ProSo03, c19ProSo04)
+
+cvbase_proso = aggregate(cvbase_proso[2:5],cvbase_proso[1], mean, na.rm = TRUE)
+
+cvbase_proso = cvbase_proso %>%
+  mutate_if(is.double, round, 2)
+
+cvbase_proso[is.na(cvbase_proso)] = 0
+
+```
+
+```{r}
+# Overall ProSo Score
+proso_score = cvbase_proso %>%
+  mutate(ProSocial_Score = rowSums(cvbase_proso[2:5]), na.rm = TRUE) %>%
+  select(coded_country,ProSocial_Score)
+```
+
+## Analysis
+
+```         
+When calculating PSP, it is assumed that all variable are equally weighted and are only a positive or negative variable, this will later be revised when assessing which variable has the strongest effect on prosocial behaviour.
+
+
+```
+
+```{r}
+#coreleation between PSP and ProSo Score
+cvbase_all_scores = merge(country_psp,proso_score)
+
+# getting row index of Pakistan
+which(cvbase_all_scores == 'Pakistan')
+
+# Linear Regression
+fit = lm(ProSocial_Score ~ PSP, data = cvbase_all_scores)
+
+summary(fit)$adj.r.squared
+  
+```
+
+```{r}
+#plotting 
+ggplot(cvbase_all_scores) +
+  aes(x = PSP, y = ProSocial_Score) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+```
+
+
+```{r}
+plot_country_psp = country_psp
+
+plot_country_psp$coded_country[plot_country_psp$coded_country == 'United States of America'] = 'USA'
+plot_country_psp$coded_country[plot_country_psp$coded_country == 'United Kingdom'] = "UK"
+
+world_map = map_data('world')
+
+ggplot(plot_country_psp) +
+  geom_map(
+    dat = world_map, map = world_map, aes(map_id = region),
+    fill = 'grey', color = '#7f7f7f', size = 0.25
+  ) +
+  geom_map(map = world_map, aes(map_id = coded_country, fill = PSP), size = 0.025) +
+  scale_fill_gradient(low = '#FB1B01', high ='#8EFB01', name = 'PSP') +
+  expand_limits(x = world_map$long, y = world_map$lat)
+```
+```{r}
+min(country_psp['PSP'])
+```
+
+
+```{r}
+country_psp[country_psp$PSP == min(country_psp['PSP']),]
+```
+
+
